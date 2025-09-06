@@ -9,10 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { HomeworkStatus } from "@/lib/types";
-import { useEffect, useState, useMemo, useRef, useCallback } from "react";
-import { Search, Filter } from "lucide-react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { Search, Filter, Loader2 } from "lucide-react";
 import PaymentInfo from "./payment-info";
 import PriceIncreaseRequests from './price-increase-requests';
+import { useHomeworksPaginated } from '@/hooks/use-homeworks';
+import { useInView } from 'react-intersection-observer';
+import HomeworkCard from './homework-card';
+import HomeworkCardSkeleton from './homework-card-skeleton';
 
 const statusColors: Record<HomeworkStatus, string> = {
   payment_approval: "bg-yellow-500/20 text-yellow-700 border-yellow-500/30",
@@ -30,33 +34,64 @@ const statusColors: Record<HomeworkStatus, string> = {
 };
 
 export default function HomeworkList() {
-    const { user, homeworks, getHomeworksForUser, setSelectedHomework, setIsHomeworkModalOpen } = useAppContext();
+    const { user, setSelectedHomework, setIsHomeworkModalOpen } = useAppContext();
     const [statusFilter, setStatusFilter] = useState<string>("all");
     const [orderSearch, setOrderSearch] = useState("");
-    const hasLoadedRef = useRef(false);
-    const isLoadingRef = useRef(false);
+    const [debouncedSearch, setDebouncedSearch] = useState("");
+    
+    // Debounce search input to reduce API calls
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(orderSearch);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [orderSearch]);
 
-    // Safe status filter change handler that prevents cascading updates
+    // Use React Query for homework data with pagination
+    const {
+        data,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+        isLoading,
+        isError,
+        error
+    } = useHomeworksPaginated({
+        user: user!,
+        limit: 20,
+        enabled: !!user
+    });
+
+    // Intersection observer for infinite scroll
+    const { ref: loadMoreRef, inView } = useInView({
+        threshold: 0,
+        rootMargin: '100px'
+    });
+
+    // Load more when scrolled to bottom
+    useEffect(() => {
+        if (inView && hasNextPage && !isFetchingNextPage) {
+            fetchNextPage();
+        }
+    }, [inView, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+    // Safe status filter change handler
     const handleStatusFilterChange = useCallback((value: string) => {
         setStatusFilter(value);
-    }, []); // Remove statusFilter from dependencies to prevent circular updates
+    }, []);
 
-    useEffect(() => {
-        if (user && !hasLoadedRef.current && !isLoadingRef.current) {
-            isLoadingRef.current = true;
-            hasLoadedRef.current = true;
-            getHomeworksForUser().finally(() => {
-                isLoadingRef.current = false;
-            });
-        }
-    }, [user]); // Only depend on user, not getHomeworksForUser
+    // Flatten paginated data
+    const allHomeworks = useMemo(() => {
+        if (!data?.pages) return [];
+        return data.pages.flatMap(page => page.homeworks);
+    }, [data]);
 
     // Filter homeworks based on user role and filters with defensive checks
     const filteredHomeworks = useMemo(() => {
-        if (!homeworks || !Array.isArray(homeworks) || homeworks.length === 0) return [];
+        if (!allHomeworks || !Array.isArray(allHomeworks) || allHomeworks.length === 0) return [];
         
         try {
-            let filtered = homeworks.filter(hw => hw && typeof hw === 'object' && hw.status); // Ensure valid homework objects
+            let filtered = allHomeworks.filter(hw => hw && typeof hw === 'object' && hw.status);
 
             // Filter by status
             if (statusFilter && statusFilter !== "all") {
@@ -64,9 +99,9 @@ export default function HomeworkList() {
             }
 
             // Filter by order number search (for staff roles)
-            if (orderSearch && orderSearch.trim() && user && user.role && ['agent', 'super_agent', 'super_worker'].includes(user.role)) {
+            if (debouncedSearch && debouncedSearch.trim() && user && user.role && ['agent', 'super_agent', 'super_worker'].includes(user.role)) {
                 filtered = filtered.filter(hw => 
-                    hw && hw.id && typeof hw.id === 'string' && hw.id.toLowerCase().includes(orderSearch.toLowerCase())
+                    hw && hw.id && typeof hw.id === 'string' && hw.id.toLowerCase().includes(debouncedSearch.toLowerCase())
                 );
             }
 
@@ -75,13 +110,13 @@ export default function HomeworkList() {
             console.error('Error filtering homeworks:', error);
             return [];
         }
-    }, [homeworks, statusFilter, orderSearch, user]);
+    }, [allHomeworks, statusFilter, debouncedSearch, user]);
 
     // Get available statuses for filter dropdown with role-specific filtering
     const availableStatuses = useMemo(() => {
-        if (!homeworks || !Array.isArray(homeworks) || homeworks.length === 0 || !user) return [];
+        if (!allHomeworks || !Array.isArray(allHomeworks) || allHomeworks.length === 0 || !user) return [];
         try {
-            const validHomeworks = homeworks.filter(hw => hw && typeof hw === 'object' && hw.status);
+            const validHomeworks = allHomeworks.filter(hw => hw && typeof hw === 'object' && hw.status);
             if (validHomeworks.length === 0) return [];
             
             let statuses = [...new Set(validHomeworks.map(hw => hw.status).filter(status => status && typeof status === 'string'))];
@@ -104,15 +139,61 @@ export default function HomeworkList() {
             console.error('Error processing available statuses:', error);
             return [];
         }
-    }, [homeworks, user]);
+    }, [allHomeworks, user]);
 
     if (!user) return null;
     
-    // Defensive check for homeworks array
-    if (!homeworks) {
+    // Loading state with skeletons
+    if (isLoading) {
+        return (
+            <div className="space-y-6">
+                {user?.role === 'super_agent' && (
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <PaymentInfo />
+                        <PriceIncreaseRequests />
+                    </div>
+                )}
+                
+                <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+                    <h2 className="text-2xl font-bold tracking-tight">Homework Assignments</h2>
+                    <div className="flex items-center gap-4">
+                        <div className="relative">
+                            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                            <Input
+                                placeholder="Search by order ID..."
+                                value={orderSearch}
+                                onChange={(e) => setOrderSearch(e.target.value)}
+                                className="pl-8 w-[200px]"
+                                disabled
+                            />
+                        </div>
+                        <Select value={statusFilter} onValueChange={handleStatusFilterChange} disabled>
+                            <SelectTrigger className="w-[180px]">
+                                <SelectValue placeholder="Filter by status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Statuses</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
+                
+                <ScrollArea className="h-[calc(100vh-280px)]">
+                    <div className="grid gap-4 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {Array.from({ length: 8 }).map((_, index) => (
+                            <HomeworkCardSkeleton key={index} />
+                        ))}
+                    </div>
+                </ScrollArea>
+            </div>
+        );
+    }
+
+    // Error state
+    if (isError) {
         return (
             <div className="flex items-center justify-center h-64">
-                <p className="text-muted-foreground">Loading homework assignments...</p>
+                <p className="text-red-600">Error loading homeworks: {error?.message || 'Unknown error'}</p>
             </div>
         );
     }
@@ -120,9 +201,9 @@ export default function HomeworkList() {
     const isStaffRole = ['agent', 'super_agent', 'super_worker'].includes(user.role);
 
     const openHomeworkModal = (homeworkId: string) => {
-        if (!homeworks || !Array.isArray(homeworks) || !homeworkId) return;
+        if (!allHomeworks || !Array.isArray(allHomeworks) || !homeworkId) return;
         try {
-            const homework = homeworks.find(h => h && h.id === homeworkId);
+            const homework = allHomeworks.find(h => h && h.id === homeworkId);
             if (homework && typeof homework === 'object') {
                 setSelectedHomework(homework);
                 setIsHomeworkModalOpen(true);
@@ -173,48 +254,22 @@ export default function HomeworkList() {
                 )}
                 
                 <div className="text-sm text-muted-foreground self-center">
-                    {filteredHomeworks.length} of {homeworks?.length || 0} homework{(homeworks?.length || 0) !== 1 ? 's' : ''}
+                    {filteredHomeworks.length} of {allHomeworks?.length || 0} homework{(allHomeworks?.length || 0) !== 1 ? 's' : ''}
+                    {hasNextPage && <span className="ml-1">(+ more)</span>}
                 </div>
             </div>
 
             {/* Homework Grid */}
             <ScrollArea className="h-[calc(100vh-280px)]">
                 <div className="grid gap-4 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                    {Array.isArray(filteredHomeworks) && filteredHomeworks.length > 0 ? filteredHomeworks.map(hw => {
-                        // Additional safety check for each homework item
-                        if (!hw || typeof hw !== 'object' || !hw.id || !hw.status) {
-                            console.warn('Invalid homework item:', hw);
-                            return null;
-                        }
-                        
-                        return (
-                            <Card 
-                                key={hw.id} 
-                                className="hover:shadow-lg transition-shadow cursor-pointer flex flex-col"
-                                onClick={() => openHomeworkModal(hw.id)}
-                            >
-                            <CardHeader>
-                                <div className="flex justify-between items-start">
-                                    <CardTitle className="text-lg">#{hw.id}</CardTitle>
-                                    <Badge variant="outline" className={cn("capitalize", statusColors[hw.status])}>
-                                        {hw.status.replace(/_/g, ' ')}
-                                    </Badge>
-                                </div>
-                                <CardDescription>{hw.moduleName}</CardDescription>
-                            </CardHeader>
-                            <CardContent className="flex-grow">
-                                <p className="text-sm text-muted-foreground">Deadline: {hw.deadline ? new Date(hw.deadline).toLocaleDateString() : 'No deadline'}</p>
-                                <p className="text-sm text-muted-foreground">Words: {hw.wordCount || 0}</p>
-                                {hw.price && typeof hw.price === 'number' && (
-                                    <p className="text-sm font-medium text-primary">Price: £{Number(hw.price).toFixed(2)}</p>
-                                )}
-                            </CardContent>
-                            <CardFooter>
-                                <Button variant="outline" className="w-full">View Details</Button>
-                            </CardFooter>
-                        </Card>
-                        );
-                    }).filter(Boolean) : (
+                    {Array.isArray(filteredHomeworks) && filteredHomeworks.length > 0 ? filteredHomeworks.map(homework => (
+                        <HomeworkCard
+                            key={homework.id}
+                            homework={homework}
+                            onOpenModal={openHomeworkModal}
+                            userRole={user?.role}
+                        />
+                    )) : (
                         <div className="col-span-full text-center text-muted-foreground py-10">
                             <p>
                                 {statusFilter !== "all" || orderSearch.trim() 
@@ -229,6 +284,26 @@ export default function HomeworkList() {
                                     className="mt-2"
                                 >
                                     Clear filters
+                                </Button>
+                            )}
+                        </div>
+                    )})
+                    
+                    {/* Load more trigger */}
+                    {hasNextPage && (
+                        <div ref={loadMoreRef} className="col-span-full flex justify-center py-4">
+                            {isFetchingNextPage ? (
+                                <div className="flex items-center gap-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    <span className="text-sm text-muted-foreground">Loading more...</span>
+                                </div>
+                            ) : (
+                                <Button 
+                                    variant="outline" 
+                                    onClick={() => fetchNextPage()}
+                                    className="w-full max-w-xs"
+                                >
+                                    Load More
                                 </Button>
                             )}
                         </div>

@@ -1,6 +1,7 @@
 import type {Metadata, Viewport} from 'next';
 import './globals.css';
 import { AppProvider } from '@/contexts/app-context';
+import { QueryProvider } from '@/components/providers/query-provider';
 import { Toaster } from "@/components/ui/toaster";
 import BottomNavbar from '@/components/layout/bottom-navbar';
 
@@ -58,11 +59,13 @@ export default function RootLayout({
         <meta httpEquiv="Expires" content="0" />
       </head>
       <body className="font-body antialiased">
-        <AppProvider>
-          {children}
-          <BottomNavbar />
-          <Toaster />
-        </AppProvider>
+        <QueryProvider>
+          <AppProvider>
+            {children}
+            <BottomNavbar />
+            <Toaster />
+          </AppProvider>
+        </QueryProvider>
       </body>
     </html>
   );

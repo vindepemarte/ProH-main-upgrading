@@ -175,41 +175,72 @@ export async function createUser(name: string, email: string, pass: string, refC
 }
 
 
+// Legacy function for backward compatibility - loads all homeworks
 export async function fetchHomeworksForUser(user: User): Promise<Homework[]> {
+    const result = await fetchHomeworksForUserPaginated(user, 1, 1000); // Load up to 1000 for backward compatibility
+    return result.homeworks;
+}
+
+// New paginated function for performance optimization
+export async function fetchHomeworksForUserPaginated(
+    user: User, 
+    page: number = 1, 
+    limit: number = 20
+): Promise<{ homeworks: Homework[]; totalCount: number; hasMore: boolean; currentPage: number }> {
     const client = await pool.connect();
-    let query = `SELECT h.*, sw.name as assigned_super_worker_name 
-                 FROM homeworks h
-                 LEFT JOIN users sw ON h.super_worker_id = sw.id`;
+    const offset = (page - 1) * limit;
+    
+    let baseQuery = `SELECT h.*, sw.name as assigned_super_worker_name 
+                     FROM homeworks h
+                     LEFT JOIN users sw ON h.super_worker_id = sw.id`;
+    let countQuery = `SELECT COUNT(*) as total FROM homeworks h`;
     const params: (string | HomeworkStatus[])[] = [];
+    const countParams: (string | HomeworkStatus[])[] = [];
     
     switch(user.role) {
         case 'super_agent':
             break;
         case 'agent':
-            query += ' JOIN users s ON h.student_id = s.id WHERE s.referred_by = $1';
+            baseQuery += ' JOIN users s ON h.student_id = s.id WHERE s.referred_by = $1';
+            countQuery += ' JOIN users s ON h.student_id = s.id WHERE s.referred_by = $1';
             params.push(user.id);
+            countParams.push(user.id);
             break;
         case 'student':
-            query += ' WHERE h.student_id = $1';
+            baseQuery += ' WHERE h.student_id = $1';
+            countQuery += ' WHERE h.student_id = $1';
             params.push(user.id);
+            countParams.push(user.id);
             break;
         case 'super_worker':
             // Super worker only sees homeworks specifically assigned to them
-            query += ' WHERE h.super_worker_id = $1';
+            baseQuery += ' WHERE h.super_worker_id = $1';
+            countQuery += ' WHERE h.super_worker_id = $1';
             params.push(user.id);
+            countParams.push(user.id);
             break;
         case 'worker':
-            query += ' WHERE h.worker_id = $1';
+            baseQuery += ' WHERE h.worker_id = $1';
+            countQuery += ' WHERE h.worker_id = $1';
             params.push(user.id);
+            countParams.push(user.id);
             break;
         default:
-            return [];
+            return { homeworks: [], totalCount: 0, hasMore: false, currentPage: page };
     }
     
-    query += ' ORDER BY h.deadline DESC';
+    baseQuery += ' ORDER BY h.deadline DESC LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
+    params.push(limit.toString(), offset.toString());
 
     try {
-        const res = await client.query(query, params);
+        // Get total count and paginated results in parallel
+        const [countRes, res] = await Promise.all([
+            client.query(countQuery, countParams),
+            client.query(baseQuery, params)
+        ]);
+        
+        const totalCount = parseInt(countRes.rows[0].total);
+        const hasMore = offset + limit < totalCount;
         
         const homeworks = await Promise.all(res.rows.map(async (row) => {
             const filesRes = await client.query('SELECT file_name as name, file_url as url, file_type, is_latest, uploaded_by, uploaded_at FROM homework_files WHERE homework_id = $1 ORDER BY uploaded_at DESC', [row.id]);
@@ -247,7 +278,12 @@ export async function fetchHomeworksForUser(user: User): Promise<Homework[]> {
             };
         }));
 
-        return homeworks;
+        return {
+            homeworks,
+            totalCount,
+            hasMore,
+            currentPage: page
+        };
     } finally {
         client.release();
     }

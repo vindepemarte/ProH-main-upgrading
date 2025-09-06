@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAppContext } from "@/contexts/app-context";
 import HomeworkList from "./dashboard/homework-list";
-import AnalyticsView from "./dashboard/analytics-view";
+import LazyAnalytics from "./dashboard/lazy-analytics";
 import SettingsView from "./dashboard/settings-view";
 import NotificationsView from "./dashboard/notifications-view";
 import UsersView from "./dashboard/users-view";
@@ -132,7 +132,7 @@ export default function Dashboard() {
                     </TabsContent>
                     {/* Analytics tab content - available to all roles */}
                     <TabsContent value="analytics" className="mt-0">
-                        <AnalyticsView />
+                        <LazyAnalytics />
                     </TabsContent>
                     <TabsContent value="notifications" className="mt-0">
                         <NotificationsView />
