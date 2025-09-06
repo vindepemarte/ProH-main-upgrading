@@ -15,6 +15,7 @@ import PaymentInfo from "./payment-info";
 import PriceIncreaseRequests from './price-increase-requests';
 import { useHomeworksPaginated } from '@/hooks/use-homeworks';
 import { useInView } from 'react-intersection-observer';
+import { useHomeworkWebSocket } from '@/hooks/use-websocket';
 import HomeworkCard from './homework-card';
 import HomeworkCardSkeleton from './homework-card-skeleton';
 
@@ -38,6 +39,9 @@ export default function HomeworkList() {
     const [statusFilter, setStatusFilter] = useState<string>("all");
     const [orderSearch, setOrderSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    
+    // WebSocket connection for real-time updates
+    const { isConnected: wsConnected, error: wsError } = useHomeworkWebSocket();
     
     // Debounce search input to reduce API calls
     useEffect(() => {
@@ -253,15 +257,21 @@ export default function HomeworkList() {
                     </div>
                 )}
                 
-                <div className="text-sm text-muted-foreground self-center">
-                    {filteredHomeworks.length} of {allHomeworks?.length || 0} homework{(allHomeworks?.length || 0) !== 1 ? 's' : ''}
-                    {hasNextPage && <span className="ml-1">(+ more)</span>}
+                <div className="flex items-center gap-2 text-sm text-muted-foreground self-center">
+                    <span>
+                        {filteredHomeworks.length} of {allHomeworks?.length || 0} homework{(allHomeworks?.length || 0) !== 1 ? 's' : ''}
+                        {hasNextPage && <span className="ml-1">(+ more)</span>}
+                    </span>
+                    {/* Real-time connection indicator */}
+                    <div className={`w-2 h-2 rounded-full ${
+                        wsConnected ? 'bg-green-500' : wsError ? 'bg-red-500' : 'bg-yellow-500'
+                    }`} title={wsConnected ? 'Real-time updates active' : wsError ? 'Connection error' : 'Connecting...'} />
                 </div>
             </div>
 
             {/* Homework Grid */}
             <ScrollArea className="h-[calc(100vh-280px)]">
-                <div className="grid gap-4 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                <div className="grid gap-4 p-2 sm:p-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {Array.isArray(filteredHomeworks) && filteredHomeworks.length > 0 ? filteredHomeworks.map(homework => (
                         <HomeworkCard
                             key={homework.id}
@@ -287,7 +297,7 @@ export default function HomeworkList() {
                                 </Button>
                             )}
                         </div>
-                    )})
+                    )}
                     
                     {/* Load more trigger */}
                     {hasNextPage && (

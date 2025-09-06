@@ -39,33 +39,33 @@ const HomeworkCard = React.memo(function HomeworkCard({ homework, onOpenModal, u
     return (
         <Card 
             key={homework.id} 
-            className="cursor-pointer hover:shadow-md transition-shadow duration-200 border-l-4" 
+            className="cursor-pointer hover:shadow-md transition-shadow duration-200 border-l-4 w-full min-w-0" 
             style={{ borderLeftColor: homework.status ? statusColors[homework.status]?.split(' ')[0]?.replace('bg-', '#') || '#gray' : '#gray' }}
             onClick={handleCardClick}
         >
             <CardHeader className="pb-2">
-                <div className="flex justify-between items-start">
-                    <CardTitle className="text-lg font-semibold truncate pr-2">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
+                    <CardTitle className="text-lg font-semibold truncate min-w-0 flex-1">
                         {homework.moduleName || 'Untitled Assignment'}
                     </CardTitle>
                     <Badge 
                         variant="outline" 
                         className={cn(
-                            "text-xs font-medium border whitespace-nowrap",
+                            "text-xs font-medium border whitespace-nowrap self-start",
                             homework.status ? statusColors[homework.status] : statusColors.payment_approval
                         )}
                     >
                         {homework.status ? homework.status.replace(/_/g, ' ').toUpperCase() : 'PAYMENT APPROVAL'}
                     </Badge>
                 </div>
-                <CardDescription className="text-sm text-muted-foreground">
+                <CardDescription className="text-sm text-muted-foreground truncate">
                     Order ID: {homework.id}
                 </CardDescription>
             </CardHeader>
             <CardContent className="pb-2">
                 <div className="space-y-2">
                     {homework.projectNumber && homework.projectNumber.length > 0 && (
-                        <p className="text-sm">
+                        <p className="text-sm truncate">
                             <span className="font-medium">Project:</span> {homework.projectNumber.join(', ')}
                         </p>
                     )}
