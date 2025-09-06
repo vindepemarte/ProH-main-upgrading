@@ -1,6 +1,4 @@
-import { NextRequest } from 'next/server';
-import { WebSocketServer, WebSocket } from 'ws';
-import { IncomingMessage } from 'http';
+import { NextRequest, NextResponse } from 'next/server';
 
 // WebSocket event types for type safety
 export type WebSocketEvent = 
@@ -11,228 +9,156 @@ export type WebSocketEvent =
   | { type: 'price_increase_request'; homeworkId: string; userId: string }
   | { type: 'payment_approved'; homeworkId: string; userId: string };
 
-// Global WebSocket server instance
-let wss: WebSocketServer | null = null;
-const clients = new Map<string, WebSocket>();
+// In-memory storage for events (in production, use Redis or database)
+const eventStore: (WebSocketEvent & { timestamp: string })[] = [];
+const MAX_EVENTS = 100;
 
-// Initialize WebSocket server
-function initWebSocketServer() {
-  if (wss) return wss;
+// Store event in memory (replace with database in production)
+function storeEvent(event: WebSocketEvent) {
+  eventStore.push({
+    ...event,
+    timestamp: new Date().toISOString()
+  });
   
-  wss = new WebSocketServer({ 
-    port: 8080,
-    perMessageDeflate: false,
-  });
-
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    console.log('New WebSocket connection established');
-    
-    // Extract user ID from query parameters or headers
-    const url = new URL(req.url || '', `http://${req.headers.host}`);
-    const userId = url.searchParams.get('userId');
-    
-    if (userId) {
-      clients.set(userId, ws);
-      console.log(`User ${userId} connected via WebSocket`);
-      
-      // Broadcast user online status
-      broadcastToAll({
-        type: 'user_online',
-        userId
-      });
-    }
-
-    // Handle incoming messages
-    ws.on('message', (data: Buffer) => {
-      try {
-        const message = JSON.parse(data.toString());
-        console.log('Received WebSocket message:', message);
-        
-        // Handle different message types
-        switch (message.type) {
-          case 'ping':
-            ws.send(JSON.stringify({ type: 'pong' }));
-            break;
-          case 'subscribe':
-            // Subscribe to specific channels/topics
-            if (message.channel && userId) {
-              console.log(`User ${userId} subscribed to ${message.channel}`);
-            }
-            break;
-          default:
-            console.log('Unknown message type:', message.type);
-        }
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    });
-
-    // Handle connection close
-    ws.on('close', () => {
-      if (userId) {
-        clients.delete(userId);
-        console.log(`User ${userId} disconnected from WebSocket`);
-      }
-    });
-
-    // Handle errors
-    ws.on('error', (error: Error) => {
-      console.error('WebSocket error:', error);
-      if (userId) {
-        clients.delete(userId);
-      }
-    });
-
-    // Send welcome message
-    ws.send(JSON.stringify({
-      type: 'connected',
-      message: 'WebSocket connection established',
-      timestamp: new Date().toISOString()
-    }));
-  });
-
-  wss.on('error', (error: Error) => {
-    console.error('WebSocket server error:', error);
-  });
-
-  console.log('WebSocket server initialized on port 8080');
-  return wss;
+  // Keep only recent events
+  if (eventStore.length > MAX_EVENTS) {
+    eventStore.shift();
+  }
 }
 
-// Broadcast message to all connected clients
+// Get recent events for a user
+function getRecentEvents(userId?: string, limit: number = 10): (WebSocketEvent & { timestamp: string })[] {
+  let events = eventStore.slice(-limit);
+  
+  if (userId) {
+    events = events.filter(event => 
+      !('userId' in event) || event.userId === userId
+    );
+  }
+  
+  return events;
+}
+
+// Simulate broadcasting by storing events
 export function broadcastToAll(event: WebSocketEvent) {
-  if (!wss) return;
-  
-  const message = JSON.stringify(event);
-  
-  wss.clients.forEach((client: WebSocket) => {
-    if (client.readyState === 1) { // WebSocket.OPEN
-      try {
-        client.send(message);
-      } catch (error) {
-        console.error('Error broadcasting to client:', error);
-      }
-    }
-  });
+  storeEvent(event);
+  console.log('Event stored for broadcast:', event);
 }
 
 // Send message to specific user
 export function sendToUser(userId: string, event: WebSocketEvent) {
-  const client = clients.get(userId);
-  
-  if (client && client.readyState === 1) { // WebSocket.OPEN
-    try {
-      client.send(JSON.stringify(event));
-      return true;
-    } catch (error) {
-      console.error(`Error sending message to user ${userId}:`, error);
-      clients.delete(userId);
-      return false;
-    }
-  }
-  
-  return false;
+  storeEvent({ ...event, userId } as WebSocketEvent);
+  console.log(`Event stored for user ${userId}:`, event);
 }
 
 // Send message to multiple users
 export function sendToUsers(userIds: string[], event: WebSocketEvent) {
-  const results = userIds.map(userId => sendToUser(userId, event));
-  return results.filter(Boolean).length;
+  userIds.forEach(userId => sendToUser(userId, event));
 }
 
-// Get connected users count
-export function getConnectedUsersCount(): number {
-  return clients.size;
+// Get number of stored events
+export function getStoredEventsCount(): number {
+  return eventStore.length;
 }
 
-// Get connected user IDs
-export function getConnectedUserIds(): string[] {
-  return Array.from(clients.keys());
-}
-
-// HTTP endpoint for WebSocket server management
-export async function GET(request: NextRequest) {
-  try {
-    // Initialize WebSocket server if not already done
-    if (!wss) {
-      initWebSocketServer();
+// Get list of recent user IDs from events
+export function getRecentUserIds(): string[] {
+  const userIds = new Set<string>();
+  eventStore.forEach(event => {
+    if ('userId' in event && event.userId) {
+      userIds.add(event.userId);
     }
+  });
+  return Array.from(userIds);
+}
+
+// HTTP GET endpoint - Return recent events for polling
+export async function GET(request: NextRequest) {
+  const url = new URL(request.url);
+  const userId = url.searchParams.get('userId') || undefined;
+  
+  // If this is a WebSocket upgrade request, reject it gracefully
+  const upgrade = request.headers.get('upgrade');
+  if (upgrade === 'websocket') {
+    return new NextResponse('WebSocket not supported in this deployment. Using polling instead.', {
+      status: 426,
+      headers: {
+        'Upgrade': 'HTTP/1.1'
+      }
+    });
+  }
+  
+  // Return recent events as JSON for polling
+  try {
+    const events = getRecentEvents(userId, 20);
     
-    return new Response(JSON.stringify({
-      status: 'WebSocket server running',
-      port: 8080,
-      connectedClients: getConnectedUsersCount(),
-      connectedUsers: getConnectedUserIds()
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
+    return NextResponse.json({
+      status: 'success',
+      events,
+      totalEvents: eventStore.length,
+      userId,
+      message: 'Recent events retrieved'
     });
-  } catch (error) {
-    console.error('Error in WebSocket GET endpoint:', error);
-    return new Response(JSON.stringify({
-      error: 'Failed to initialize WebSocket server',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+  } catch (error: any) {
+    console.error('Error retrieving events:', error);
+    return NextResponse.json(
+      { status: 'error', message: error.message },
+      { status: 500 }
+    );
   }
 }
 
-// HTTP endpoint for sending messages via REST API
+// HTTP POST endpoint for sending events
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { type, userId, userIds, ...eventData } = body;
     
     if (!type) {
-      return new Response(JSON.stringify({
-        error: 'Event type is required'
-      }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
+      return NextResponse.json(
+        { status: 'error', message: 'Event type is required' },
+        { status: 400 }
+      );
+    }
+    
+    const event: WebSocketEvent = { type, ...eventData } as WebSocketEvent;
+    
+    if (userIds && Array.isArray(userIds)) {
+      // Send to multiple users
+      sendToUsers(userIds, event);
+      return NextResponse.json({
+        status: 'success',
+        message: `Event sent to ${userIds.length} users`,
+        event,
+        recipients: userIds
+      });
+    } else if (userId) {
+      // Send to specific user
+      sendToUser(userId, event);
+      return NextResponse.json({
+        status: 'success',
+        message: `Event sent to user ${userId}`,
+        event,
+        recipient: userId
+      });
+    } else {
+      // Broadcast to all users
+      broadcastToAll(event);
+      return NextResponse.json({
+        status: 'success',
+        message: 'Event broadcasted to all users',
+        event,
+        totalRecipients: getStoredEventsCount()
       });
     }
-    
-    const event: WebSocketEvent = { type, ...eventData };
-    
-    let result;
-    if (userId) {
-      // Send to specific user
-      result = sendToUser(userId, event);
-    } else if (userIds && Array.isArray(userIds)) {
-      // Send to multiple users
-      result = sendToUsers(userIds, event);
-    } else {
-      // Broadcast to all
-      broadcastToAll(event);
-      result = getConnectedUsersCount();
-    }
-    
-    return new Response(JSON.stringify({
-      success: true,
-      sent: result,
-      event
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  } catch (error) {
-    console.error('Error in WebSocket POST endpoint:', error);
-    return new Response(JSON.stringify({
-      error: 'Failed to send WebSocket message',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+  } catch (error: any) {
+    console.error('Event send error:', error);
+    return NextResponse.json(
+      { status: 'error', message: error.message },
+      { status: 500 }
+    );
   }
 }
 
-// Initialize WebSocket server on module load
-if (typeof window === 'undefined') {
-  // Only run on server side
-  setTimeout(() => {
-    initWebSocketServer();
-  }, 1000);
-}
+// Initialize event store
+console.log('WebSocket API route initialized with event polling system');

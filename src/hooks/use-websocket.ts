@@ -63,124 +63,124 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, []);
 
-  // Connect to WebSocket
-  const connect = useCallback(() => {
-    if (!enabled || !user?.id || wsRef.current?.readyState === WebSocket.CONNECTING) {
-      return;
+  // Polling mechanism to replace WebSocket
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastEventTimestamp = useRef<string>('');
+  
+  const startPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
     }
+    
+    const pollEvents = async () => {
+      if (!user?.id || !state.isConnected) return;
+      
+      try {
+        const response = await fetch(`/api/websocket?userId=${encodeURIComponent(user.id)}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const data = await response.json();
+        if (data.status === 'success' && data.events) {
+          // Process new events
+          data.events.forEach((event: any) => {
+            if (event.timestamp > lastEventTimestamp.current) {
+              setState(prev => ({ ...prev, lastMessage: event }));
+              onMessage?.(event);
+              lastEventTimestamp.current = event.timestamp;
+            }
+          });
+        }
+      } catch (error: any) {
+        console.error('Polling error:', error);
+        // Don't disconnect on polling errors, just log them
+      }
+    };
+    
+    // Poll every 2 seconds
+    pollingIntervalRef.current = setInterval(pollEvents, 2000);
+    
+    // Initial poll
+    pollEvents();
+  }, [user?.id, state.isConnected, onMessage]);
 
-    // Close existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
+  // Connect using polling (fallback for WebSocket)
+  const connect = useCallback(() => {
+    if (!enabled || !user?.id) {
+      return;
     }
 
     setState(prev => ({ ...prev, isConnecting: true, error: null }));
 
     try {
-      // Use localhost for development, adjust for production
-      const wsUrl = `ws://localhost:8080?userId=${encodeURIComponent(user.id)}`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-        reconnectCountRef.current = 0;
-        setState(prev => ({
-          ...prev,
-          isConnected: true,
-          isConnecting: false,
-          error: null,
-          reconnectCount: 0
-        }));
-        onConnect?.();
-
-        // Send ping to keep connection alive
-        ws.send(JSON.stringify({ type: 'ping' }));
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data: WebSocketEvent = JSON.parse(event.data);
-          setState(prev => ({ ...prev, lastMessage: data }));
-          onMessage?.(data);
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      };
-
-      ws.onclose = (event) => {
-        console.log('WebSocket disconnected:', event.code, event.reason);
-        wsRef.current = null;
-        setState(prev => ({
-          ...prev,
-          isConnected: false,
-          isConnecting: false
-        }));
-        onDisconnect?.();
-
-        // Attempt reconnection if not manually closed
-        if (!isManualCloseRef.current && enabled && reconnectCountRef.current < reconnectAttempts) {
-          reconnectCountRef.current++;
-          setState(prev => ({ ...prev, reconnectCount: reconnectCountRef.current }));
-          
-          console.log(`Attempting to reconnect (${reconnectCountRef.current}/${reconnectAttempts})...`);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, reconnectInterval);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setState(prev => ({
-          ...prev,
-          error: 'WebSocket connection error',
-          isConnecting: false
-        }));
-        onError?.(error);
-      };
-
-    } catch (error) {
-      console.error('Failed to create WebSocket connection:', error);
+      console.log('Starting polling connection for user:', user.id);
+      
+      // Simulate WebSocket connection with polling
       setState(prev => ({
         ...prev,
-        error: error instanceof Error ? error.message : 'Connection failed',
-        isConnecting: false
+        isConnected: true,
+        isConnecting: false,
+        error: null,
+        reconnectCount: 0
       }));
-    }
-  }, [enabled, user?.id, reconnectAttempts, reconnectInterval, onConnect, onMessage, onDisconnect, onError]);
-
-  // Disconnect from WebSocket
-  const disconnect = useCallback(() => {
-    isManualCloseRef.current = true;
-    clearReconnectTimeout();
-    
-    if (wsRef.current) {
-      wsRef.current.close(1000, 'Manual disconnect');
-      wsRef.current = null;
-    }
-    
-    setState(prev => ({
-      ...prev,
-      isConnected: false,
-      isConnecting: false,
-      error: null
-    }));
-  }, [clearReconnectTimeout]);
-
-  // Send message through WebSocket
-  const sendMessage = useCallback((message: any) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(JSON.stringify(message));
-        return true;
-      } catch (error) {
-        console.error('Error sending WebSocket message:', error);
-        return false;
+      
+      onConnect?.();
+      
+      // Start polling for events
+      startPolling();
+    } catch (error: any) {
+      console.error('Connection error:', error);
+      setState(prev => ({
+        ...prev,
+        isConnected: false,
+        isConnecting: false,
+        error: error.message || 'Connection failed'
+      }));
+      onError?.(error);
+      
+      // Attempt reconnection
+      if (reconnectCountRef.current < reconnectAttempts) {
+        reconnectCountRef.current++;
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, reconnectInterval * Math.pow(2, reconnectCountRef.current - 1));
       }
     }
-    return false;
-  }, []);
+  }, [enabled, user?.id, reconnectAttempts, reconnectInterval, onConnect, onError, startPolling]);
+
+
+
+  // Disconnect polling
+    const disconnect = useCallback(() => {
+      isManualCloseRef.current = true;
+      clearReconnectTimeout();
+      
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      
+      setState(prev => ({
+        ...prev,
+        isConnected: false,
+        isConnecting: false,
+        error: null
+      }));
+    }, [clearReconnectTimeout]);
+
+  // Send message via API (since we're using polling)
+  const sendMessage = useCallback(async (message: any) => {
+    try {
+      const response = await fetch('/api/websocket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...message, userId: user?.id })
+      });
+      return response.ok;
+    } catch (error) {
+      console.error('Error sending message:', error);
+      return false;
+    }
+  }, [user?.id]);
 
   // Manual reconnect
   const reconnect = useCallback(() => {
@@ -215,8 +215,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   useEffect(() => {
     return () => {
       clearReconnectTimeout();
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
       }
     };
   }, [clearReconnectTimeout]);
